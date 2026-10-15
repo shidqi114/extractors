@@ -22,17 +22,19 @@ dump:
 
 images:
   # Image values in the DB are bare filenames (e.g. 20220324111256_83rxz.jpg),
-  # so tell the tool where those files live. Find the folder with:
-  #   extractor probe --find-file 20220324111256_83rxz.jpg
+  # so tell the tool where those files live. Placeholders {year} {month} {day} are filled from the
+  # date at the start of the file name. Test an address with:
+  #   extractor images check --ref 20220324111256_83rxz.jpg
   # Sources are tried in order; each can use a public URL, a folder on the VPS
   # (fetched over SFTP), or both (URL first, SFTP as fallback).
   sources:
     - name: foto
       columns: ["rumah.foto", "rumah_foto.*"]   # table.column patterns, * allowed
-      base_url: https://hous.id/foto/           # TODO: confirm
-      sftp_dir: /home/outsider/public_html/foto # TODO: confirm with `probe`
+      # {year} = first 4 digits of the file name: 20260603142126_qyp17.jpg -> .../2026/20260603142126_qyp17.jpg
+      base_url: https://hous.id/images/rumah/{year}/
+      # sftp_dir: /path/on/the/vps/images/rumah/{year}   # optional fallback; same placeholders
   # Photos of agents live in the `agent` table; add its image column to `columns` above
-  # (and a source for it) if you want them copied into agents/<id>/.
+  # (and a source for it) if you want them copied into the agent's folder.
   include_columns: []               # force-scan, e.g. ["agent.logo"]
   exclude_columns: []               # never scan, e.g. ["rumah.fotodalam"]
   min_hit_ratio: 0.5                # share of sampled values that must look like images

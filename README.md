@@ -50,6 +50,11 @@ they live. For each reference, sources whose `columns` patterns match are tried 
 downloaded as-is. Columns are auto-detected (hit ratio >= `min_hit_ratio`); use
 `include_columns` / `exclude_columns` to override.
 
+Photos stored in per-year folders (`https://hous.id/images/rumah/2026/20260603142126_qyp17.jpg`) need no
+extra work: use `{year}` in `base_url` / `sftp_dir`, e.g. `https://hous.id/images/rumah/{year}/`. It is taken
+from the first 4 digits of the file name; `{month}` and `{day}` work the same way. A file whose name has
+no date is skipped for that source and reported as unresolved.
+
 ## When images don't download
 
 `extractor images download` prints how many images are on disk and a few example failures. If none

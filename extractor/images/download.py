@@ -123,7 +123,7 @@ def _sftp_fetch(sftp: SFTPLike, lock: threading.Lock, remote: str, target: Path)
 
 async def _run_job(job: Job, target: Path, client, sftp, lock, cfg: ImagesConfig) -> Outcome:
     if not job.candidates:
-        return Outcome("unresolved", error="no matching image source in config")
+        return Outcome("unresolved", error="no matching image source in config, or the file name has no date for {year}")
     last: Outcome | None = None
     for cand in job.candidates:
         if cand.kind == "http":

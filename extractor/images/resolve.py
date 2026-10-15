@@ -38,6 +38,25 @@ def _safe_local(rel: str, salt: str = "") -> str:
     return path
 
 
+_DATED = re.compile(r"^(\d{4})(\d{2})(\d{2})")
+
+
+def _expand(template: str, rel_path: str) -> str | None:
+    """Fill {year}/{month}/{day} from the date at the start of the file name (20260603142126_x.jpg).
+
+    None when the template needs a date and the file name has none.
+    """
+    if "{" not in template:
+        return template
+    m = _DATED.match(posixpath.basename(rel_path))
+    if not m:
+        return None
+    try:
+        return template.format(year=m.group(1), month=m.group(2), day=m.group(3))
+    except (KeyError, IndexError, ValueError):
+        return None  # an unknown placeholder: treat as "no place to look" instead of crashing
+
+
 def plan_job(raw: str, table: str, column: str, cfg: ImagesConfig) -> Job | None:
     """Turn a raw DB reference into a download job. None = not downloadable (e.g. data: URI)."""
     raw = raw.strip()
@@ -62,9 +81,11 @@ def plan_job(raw: str, table: str, column: str, cfg: ImagesConfig) -> Job | None
 
     candidates: list[Candidate] = []
     for s in sources:
-        if s.base_url:
-            candidates.append(Candidate("http", s.base_url.rstrip("/") + "/" + quote(rel_path)))
-        if s.sftp_dir:
-            candidates.append(Candidate("sftp", posixpath.join(s.sftp_dir, rel_path)))
+        base = _expand(s.base_url, rel_path) if s.base_url else None
+        if base:
+            candidates.append(Candidate("http", base.rstrip("/") + "/" + quote(rel_path)))
+        folder = _expand(s.sftp_dir, rel_path) if s.sftp_dir else None
+        if folder:
+            candidates.append(Candidate("sftp", posixpath.join(folder, rel_path)))
     key = f"rel:{'+'.join(s.name for s in sources)}:{rel_path}"
     return Job(key, _safe_local(f"{sources[0].name}/{rel_path}"), candidates)

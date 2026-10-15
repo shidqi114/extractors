@@ -205,3 +205,31 @@ def test_unresolved_columns_are_named_in_the_summary(dumped, server):
 
     assert sorted(summary.unresolved_columns) == [("rumah_foto.extra", 2), ("rumah_foto.foto", 2)]
     assert all(status != "unresolved" for status, _, _ in summary.samples)  # samples show real tried addresses
+
+
+def test_dated_folders_use_the_year_from_the_file_name(dumped, httpserver):
+    dest, out = dumped
+    for year, name in (("2022", "20220324111256_83rxz.jpg"), ("2024", "a-2024-file.jpg")):
+        httpserver.expect_request(f"/images/rumah/{year}/{name}").respond_with_data(JPEG, content_type="image/jpeg")
+    cfg = ImagesConfig(
+        sources=[ImageSource(name="foto", columns=["rumah.foto"],
+                             base_url=httpserver.url_for("/") + "images/rumah/{year}/")],
+        max_retries=1, retry_wait=0,
+    )
+
+    job = plan_job("20260603142126_qyp17.jpg", "rumah", "foto", cfg)
+    assert job.candidates[0].target.endswith("/images/rumah/2026/20260603142126_qyp17.jpg")
+    assert plan_job("20220324111256_83rxz.jpg", "rumah", "foto", cfg).candidates[0].target.endswith(
+        "/images/rumah/2022/20220324111256_83rxz.jpg")
+    assert plan_job("missing.jpg", "rumah", "foto", cfg).candidates == []  # no date, no year: nothing to try
+
+    found = asyncio.run(check_job(plan_job("20220324111256_83rxz.jpg", "rumah", "foto", cfg), cfg, None, out))
+    assert [o.kind for _, o in found] == ["ok"]
+
+
+def test_sftp_dir_accepts_the_same_placeholders():
+    cfg = ImagesConfig(sources=[ImageSource(name="foto", sftp_dir="/srv/images/rumah/{year}/{month}")])
+    job = plan_job("20260603142126_qyp17.jpg", "rumah", "foto", cfg)
+    assert [(c.kind, c.target) for c in job.candidates] == [("sftp", "/srv/images/rumah/2026/06/20260603142126_qyp17.jpg")]
+    bad = ImagesConfig(sources=[ImageSource(name="foto", base_url="https://h.id/{nope}/")])
+    assert plan_job("20260603142126_qyp17.jpg", "rumah", "foto", bad).candidates == []  # unknown placeholder: no crash
