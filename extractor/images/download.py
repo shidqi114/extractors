@@ -41,6 +41,7 @@ class Summary:
     attempted: int
     counts: dict[str, int]  # final status of every job in the manifest
     samples: list[tuple[str, str, str]] = field(default_factory=list)  # (status, where, why) of a few failures
+    unresolved_columns: list[tuple[str, int]] = field(default_factory=list)  # ("table.column", refs) with no source
 
 
 class _Retry(Exception):
@@ -256,7 +257,15 @@ async def download_all(
         samples = [
             (st, url or "", err or (f"HTTP {code}" if code else ""))
             for st, url, err, code in c.exec_driver_sql(
-                "SELECT status, url, error, http_status FROM _images WHERE status != 'ok' LIMIT 5"
+                "SELECT status, url, error, http_status FROM _images WHERE status NOT IN ('ok', 'unresolved') "
+                "ORDER BY CASE status WHEN 'error' THEN 0 ELSE 1 END LIMIT 5"
             )
         ]
-    return Summary(len(pending), dict(counts), samples)
+        unresolved = [
+            (f"{t}.{col}", n)
+            for t, col, n in c.exec_driver_sql(
+                "SELECT r.table_name, r.column_name, COUNT(*) FROM _image_refs r JOIN _images i ON i.job_key = r.job_key "
+                "WHERE i.status = 'unresolved' GROUP BY 1, 2 ORDER BY 3 DESC"
+            )
+        ]
+    return Summary(len(pending), dict(counts), samples, unresolved)

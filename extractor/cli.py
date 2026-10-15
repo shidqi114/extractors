@@ -118,10 +118,12 @@ def _download(cfg: Config, ssh, retry_failed: bool) -> None:
     ok = summary.counts.get("ok", 0)
     failed = sum(n for status, n in summary.counts.items() if status != "ok")
     console.print(f"Attempted {summary.attempted}. Images on disk: {ok}. Failed: {failed}. Status: {summary.counts}")
-    if summary.counts.get("unresolved"):
-        console.print("[yellow]Some references match no images.sources entry; see the _images table.[/]")
-    if failed:
-        console.print("[bold]Examples of failures:[/]")
+    if summary.unresolved_columns:
+        console.print("[yellow]No images.sources entry covers these columns, so their images were skipped:[/]")
+        for column, n in summary.unresolved_columns:
+            console.print(f"  {column}: {n} reference(s)  -> add \"{column}\" to a source's `columns` in config.yaml")
+    if summary.samples:
+        console.print("[bold]Examples of failures (the exact address that was tried):[/]")
         for status, where, why in summary.samples:
             console.print(f"  {status}: {where} {why}".rstrip())
     if summary.attempted == 0 and failed:

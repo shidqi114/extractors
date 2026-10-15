@@ -192,3 +192,16 @@ def test_check_job_reports_every_candidate_and_leaves_nothing_behind(server, tmp
     no_ssh = asyncio.run(check_job(plan_job("a1.jpg", "rumah", "foto", cfg_sftp), cfg_sftp, None, tmp_path))
     assert [o.kind for _, o in no_ssh] == ["ok", "error"] and "no ssh" in no_ssh[1][1].error.lower()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_unresolved_columns_are_named_in_the_summary(dumped, server):
+    dest, out = dumped
+    cfg = _cfg(server)
+    cfg.sources[0].columns = ["rumah.foto"]  # rumah_foto.* deliberately left without a source
+    cfg.include_columns = ["rumah_foto.*"]
+    _scan(dest, cfg)
+
+    summary = asyncio.run(download_all(dest, cfg, out))
+
+    assert sorted(summary.unresolved_columns) == [("rumah_foto.extra", 2), ("rumah_foto.foto", 2)]
+    assert all(status != "unresolved" for status, _, _ in summary.samples)  # samples show real tried addresses
