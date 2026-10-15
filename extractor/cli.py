@@ -15,6 +15,8 @@ from .export import export_all
 from .images.detect import Detector, scan_refs, select_columns
 from .images.download import download_all
 from .link import link as link_images
+from .organize import OrganizeError
+from .organize import organize as organize_output
 from .probe import probe as run_probe
 from .state import State
 from .tunnel import SSHSession
@@ -126,6 +128,28 @@ def _link_and_export(cfg: Config) -> None:
     console.print(f"[green]Exported {len(counts)} tables to {cfg.output_dir}/csv and /jsonl[/]")
 
 
+def _organize(cfg: Config, hardlink: bool = False) -> None:
+    try:
+        s = organize_output(open_dest(cfg.output_dir), cfg.output_dir, cfg.organize, hardlink)
+    except OrganizeError as e:
+        console.print(f"[red]Organize failed:[/] {e}")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]Organized {s.houses} houses into {cfg.output_dir / cfg.organize.houses_dir} "
+        f"and {s.agents} agents into {cfg.output_dir / cfg.organize.agents_dir}[/]"
+    )
+    console.print(f"  photos placed: {s.photos_placed}, referenced but unavailable: {s.photos_unavailable}")
+    for label, n in (
+        ("houses without an agent", s.houses_without_agent),
+        ("houses pointing at an unknown agent", s.unknown_agent),
+        ("photo rows whose house doesn't exist", s.orphan_photos),
+        ("photo rows with no image link", s.photo_rows_without_image),
+        ("house rows without an id (skipped)", s.houses_skipped),
+    ):
+        if n:
+            console.print(f"  [yellow]{label}: {n}[/]")
+
+
 @app.command()
 def probe(config: Path = ConfigOpt, find_file: str = typer.Option(None, help="A known filename to locate on the VPS.")):
     """Read-only look at the VPS: DB engine, candidate files, and where an image file lives."""
@@ -184,18 +208,29 @@ def export(config: Path = ConfigOpt):
 
 
 @app.command()
+def organize(
+    config: Path = ConfigOpt,
+    hardlink: bool = typer.Option(False, help="Hard-link photos instead of copying (saves disk space)."),
+):
+    """Build houses/<id_rumah>/ (house.json + photos/) and agents/<id>/ from the local copy."""
+    _organize(load_config(config), hardlink)
+
+
+@app.command()
 def run(
     config: Path = ConfigOpt,
     retry_failed: bool = typer.Option(False, help="Re-attempt images that failed or were not found."),
     fresh: bool = typer.Option(False, help="Re-copy all tables from scratch."),
+    hardlink: bool = typer.Option(False, help="Hard-link photos into houses/ instead of copying."),
 ):
-    """Everything in order: dump, scan, download, link, export."""
+    """Everything in order: dump, scan, download, link, export, organize."""
     cfg = load_config(config)
     with _ssh(cfg) as ssh:
         _dump(cfg, ssh, None, fresh)
         _scan(cfg)
         _download(cfg, ssh, retry_failed)
     _link_and_export(cfg)
+    _organize(cfg, hardlink)
 
 
 @contextmanager

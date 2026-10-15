@@ -58,12 +58,29 @@ class ImagesConfig(BaseModel):
     user_agent: str = "extractor/0.1 (+legacy-db-migration)"
 
 
+class OrganizeConfig(BaseModel):
+    """How houses, their photos and their agents relate; used to build houses/ and agents/."""
+
+    house_table: str = "rumah"
+    house_id: str = "id_rumah"
+    house_main_photo: str = "foto"  # column of the house table holding the main photo
+    house_agent: str = "agent"  # column of the house table pointing at the agent
+    photo_table: str = "rumah_foto"
+    photo_id: str = "id_foto"
+    photo_house: str = "id_rumah"  # column of the photo table pointing at the house
+    agent_table: str = "agent"
+    agent_id: str | None = None  # default: the agent table's primary key
+    houses_dir: str = "houses"
+    agents_dir: str = "agents"
+
+
 class Config(BaseModel):
     ssh: SSHConfig | None = None
     db: DBConfig
     output_dir: Path = Path("output")
     dump: DumpConfig = DumpConfig()
     images: ImagesConfig = ImagesConfig()
+    organize: OrganizeConfig = OrganizeConfig()
 
 
 def _load_dotenv(path: Path) -> None:

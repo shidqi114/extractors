@@ -5,7 +5,7 @@ SQLite file, then finds the image references in it, downloads the images, and li
 each reference to its local file. Results are also written as CSV and JSONL per table.
 
 ```
-probe -> dump -> images scan -> images download -> link -> export
+probe -> dump -> images scan -> images download -> link -> export -> organize
 ```
 
 ## Setup
@@ -37,7 +37,8 @@ extractor images scan -c config.yaml --dry-run
 extractor run -c config.yaml
 ```
 
-Single steps: `dump`, `images scan`, `images download [--retry-failed]`, `link`, `export`.
+Single steps: `dump`, `images scan`, `images download [--retry-failed]`, `link`, `export`,
+`organize [--hardlink]`.
 Every step is re-runnable. `dump` skips tables already finished (`--fresh` to redo),
 `images download` skips files already downloaded.
 
@@ -48,6 +49,32 @@ they live. For each reference, sources whose `columns` patterns match are tried 
 `base_url` over HTTP first, then `sftp_dir` straight from the VPS disk. Full URLs in the DB are
 downloaded as-is. Columns are auto-detected (hit ratio >= `min_hit_ratio`); use
 `include_columns` / `exclude_columns` to override.
+
+## Houses and agents folders (`organize`)
+
+After the images are downloaded and linked, `extractor organize` (also the last step of `run`) builds:
+
+```
+output/
+  houses/
+    <id_rumah>/
+      house.json              # the rumah row + main photo + photo list + link to the agent
+      photos/
+        main_<filename>.jpg   # rumah.foto
+        <id_foto>_<filename>.jpg   # one per rumah_foto row
+  agents/
+    <id_agent>/
+      agent.json              # the agent row + the ids of the houses they list
+```
+
+- `house.json` has `house` (all columns of the rumah row), `main_photo`, `photos` (each with its
+  rumah_foto row and the file/status of its image) and `agent` (id plus a relative path to `agent.json`).
+  Photos that could not be downloaded are listed with their status (`not_found`, `error`, ...), not dropped.
+- Houses link to agents through `rumah.agent`; every row of the agent table gets a folder,
+  with the list of houses it lists in `agent.json`.
+- Photos are copied out of `images/`, which stays as the download cache. `--hardlink` saves disk space.
+- Column names default to `id_rumah`, `id_foto`, `rumah.foto`, `rumah.agent` and the agent table's primary key.
+  If one is wrong, the command says which and lists the real columns; fix it in the `organize:` section of `config.yaml`.
 
 ## Output (`output/`)
 

@@ -31,6 +31,8 @@ images:
       columns: ["rumah.foto", "rumah_foto.*"]   # table.column patterns, * allowed
       base_url: https://hous.id/foto/           # TODO: confirm
       sftp_dir: /home/outsider/public_html/foto # TODO: confirm with `probe`
+  # Photos of agents live in the `agent` table; add its image column to `columns` above
+  # (and a source for it) if you want them copied into agents/<id>/.
   include_columns: []               # force-scan, e.g. ["agent.logo"]
   exclude_columns: []               # never scan, e.g. ["rumah.fotodalam"]
   min_hit_ratio: 0.5                # share of sampled values that must look like images
@@ -38,3 +40,18 @@ images:
   concurrency: 8
   timeout: 30
   max_retries: 3
+
+# How houses, photos and agents relate. Used to build houses/<id_rumah>/ and agents/<id>/.
+# Defaults shown; change a name only if `extractor organize` reports a missing column.
+organize:
+  house_table: rumah
+  house_id: id_rumah
+  house_main_photo: foto           # main photo column of the house table
+  house_agent: agent               # column that points at the agent
+  photo_table: rumah_foto
+  photo_id: id_foto
+  photo_house: id_rumah            # column of rumah_foto that points at the house
+  agent_table: agent
+  # agent_id: id_agent             # default: the agent table's primary key
+  houses_dir: houses
+  agents_dir: agents
