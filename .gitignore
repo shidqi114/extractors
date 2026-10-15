@@ -1,0 +1,14 @@
+# secrets and local config
+.env
+config.yaml
+
+# extraction results (can be large and contain private data)
+output/
+
+# python
+__pycache__/
+*.egg-info/
+.venv/
+.pytest_cache/
+*.sqlite
+*.sqlite3

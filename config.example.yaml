@@ -1,0 +1,40 @@
+# Copy to config.yaml (git-ignored) and adjust. Passwords come from .env.
+ssh:
+  host: hous.id
+  port: 22
+  user: outsider
+  # key_path: ~/.ssh/id_ed25519     # use instead of a password if you have a key
+  strict_host_key: false            # true = refuse hosts missing from ~/.ssh/known_hosts
+
+db:
+  dialect: mysql                    # mysql | postgresql | sqlite
+  host: 127.0.0.1                   # as seen from the VPS
+  port: 3306
+  name: properti_housnyah
+  user: properti_houston
+
+output_dir: output
+
+dump:
+  batch_size: 2000
+  include_tables: []                # empty = all tables, e.g. [rumah, rumah_foto]
+  exclude_tables: []
+
+images:
+  # Image values in the DB are bare filenames (e.g. 20220324111256_83rxz.jpg),
+  # so tell the tool where those files live. Find the folder with:
+  #   extractor probe --find-file 20220324111256_83rxz.jpg
+  # Sources are tried in order; each can use a public URL, a folder on the VPS
+  # (fetched over SFTP), or both (URL first, SFTP as fallback).
+  sources:
+    - name: foto
+      columns: ["rumah.foto", "rumah_foto.*"]   # table.column patterns, * allowed
+      base_url: https://hous.id/foto/           # TODO: confirm
+      sftp_dir: /home/outsider/public_html/foto # TODO: confirm with `probe`
+  include_columns: []               # force-scan, e.g. ["agent.logo"]
+  exclude_columns: []               # never scan, e.g. ["rumah.fotodalam"]
+  min_hit_ratio: 0.5                # share of sampled values that must look like images
+  sample_size: 500
+  concurrency: 8
+  timeout: 30
+  max_retries: 3
