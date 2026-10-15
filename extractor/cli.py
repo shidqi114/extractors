@@ -214,13 +214,22 @@ def images_check(
     images_cfg = cfg.images.model_copy(deep=True)
     if base_url or sftp_dir:
         images_cfg.sources = [ImageSource(name="check", columns=["*"], base_url=base_url, sftp_dir=sftp_dir)]
-    table_name, column_name = (column.split(".", 1) + [""])[:2] if column else (None, None)
-    if ref is None:
-        with open_dest(cfg.output_dir).connect() as c:
+    table_name, column_name = (column.split(".", 1) + ["x"])[:2] if column else (None, None)
+    with open_dest(cfg.output_dir).connect() as c:
+        if ref is None:
             row = c.exec_driver_sql("SELECT table_name, column_name, raw_ref FROM _image_refs LIMIT 1").fetchone()
-        if row is None:
-            raise typer.BadParameter("No image references yet. Run `extractor images scan` first, or pass --ref.")
-        table_name, column_name, ref = table_name or row[0], column_name or row[1], row[2]
+            if row is None:
+                raise typer.BadParameter("No image references yet. Run `extractor images scan` first, or pass --ref.")
+            table_name, column_name, ref = table_name or row[0], column_name or row[1], row[2]
+        elif table_name is None:  # --ref only: find which column that value came from
+            row = c.exec_driver_sql(
+                "SELECT table_name, column_name FROM _image_refs WHERE raw_ref = ? LIMIT 1", (ref,)
+            ).fetchone()
+            if row:
+                table_name, column_name = row
+    if table_name is None and images_cfg.sources:  # unknown value: pretend it is in the first source's column
+        first = images_cfg.sources[0].columns[0].replace("*", "x")
+        table_name, column_name = (first.split(".", 1) + ["x"])[:2]
     job = plan_job(ref, table_name or "", column_name or "", images_cfg)
     if job is None or not job.candidates:
         console.print(f"[red]No place to look for '{ref}'.[/] It matches no source: check images.sources[].columns, "
