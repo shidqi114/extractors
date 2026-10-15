@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import posixpath
+import re
 import shlex
 
 from .tunnel import SSHSession
@@ -46,7 +47,20 @@ def probe(ssh: SSHSession, find_file: str | None = None) -> dict[str, list[str] 
         "app_config_files": config_files,
     }
     if find_file:
-        found = lines(f"find / -xdev -type f -name {shlex.quote(find_file)} -not -path '/proc/*' 2>/dev/null | head -5")
+        # No -xdev here: web roots are often on a separate mount (/var/www, /home, /data).
+        found = lines(
+            f"find / \\( -path /proc -o -path /sys \\) -prune -o -type f -name {shlex.quote(find_file)} -print 2>/dev/null | head -5"
+        )
         result["find_file_matches"] = found
         result["suggested_sftp_dirs"] = sorted({posixpath.dirname(p) for p in found})
+        # Fallback: the unique part of the name, in case the file was renamed or has a size suffix.
+        token = re.sub(r"\.[A-Za-z0-9]+$", "", find_file).split("_")[-1]
+        if not found and len(token) >= 4:
+            result["similar_files"] = lines(
+                f"find / \\( -path /proc -o -path /sys \\) -prune -o -type f -iname {shlex.quote('*' + token + '*')} -print 2>/dev/null | head -5"
+            )
+    result["web_roots"] = lines(
+        "ls -d /var/www /var/www/* /srv/* /home/*/public_html /home/*/www /home/*/htdocs /usr/share/nginx/html "
+        "/opt/lampp/htdocs /var/lib/docker 2>/dev/null | head -40"
+    )
     return result
