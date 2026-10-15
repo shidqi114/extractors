@@ -50,6 +50,21 @@ they live. For each reference, sources whose `columns` patterns match are tried 
 downloaded as-is. Columns are auto-detected (hit ratio >= `min_hit_ratio`); use
 `include_columns` / `exclude_columns` to override.
 
+## When images don't download
+
+`extractor images download` prints how many images are on disk and a few example failures. If none
+downloaded, the `base_url` / `sftp_dir` are wrong. Test one image without editing the config:
+
+```bash
+extractor images check --base-url https://your-site.com/path/to/photos/
+extractor images check --sftp-dir /var/www/site/photos
+```
+
+`check` shows, for each place it tries, whether the file was found (HTTP status, file type, size, or the
+SFTP error). Once it says FOUND, put those values in `images.sources` and run `extractor images download`
+again. Images that failed under the old settings are retried automatically when the sources change;
+`--retry-failed` retries them with unchanged settings.
+
 ## Houses and agents folders (`organize`)
 
 After the images are downloaded and linked, `extractor organize` (also the last step of `run`) builds:
@@ -63,15 +78,18 @@ output/
         main_<filename>.jpg   # rumah.foto
         <id_foto>_<filename>.jpg   # one per rumah_foto row
   agents/
-    <id_agent>/
+    <agent name>/
       agent.json              # the agent row + the ids of the houses they list
 ```
 
 - `house.json` has `house` (all columns of the rumah row), `main_photo`, `photos` (each with its
   rumah_foto row and the file/status of its image) and `agent` (id plus a relative path to `agent.json`).
   Photos that could not be downloaded are listed with their status (`not_found`, `error`, ...), not dropped.
-- Houses link to agents through `rumah.agent`; every row of the agent table gets a folder,
-  with the list of houses it lists in `agent.json`.
+- Houses link to agents through `rumah.agent`; every row of the agent table gets a folder named after the
+  agent, with the list of houses they list in `agent.json`. Two agents with the same name get their id
+  added (`Widodo_4`, `Widodo_9`); an agent without a name becomes `agent_<id>`. The name column is
+  auto-detected (`nama_agent`, `nama`, `name`, ...); set `organize.agent_name` to choose another.
+- Re-running only adds and overwrites. If you switch the folder naming, delete `output/agents` first so old folders don't stay behind.
 - Photos are copied out of `images/`, which stays as the download cache. `--hardlink` saves disk space.
 - Column names default to `id_rumah`, `id_foto`, `rumah.foto`, `rumah.agent` and the agent table's primary key.
   If one is wrong, the command says which and lists the real columns; fix it in the `organize:` section of `config.yaml`.

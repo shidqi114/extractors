@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,6 +38,30 @@ def _name(value) -> str | None:
         return None
     s = re.sub(r"[^\w.\-]", "_", str(value).strip())
     return s.strip(".") or None
+
+
+_NAME_COLUMNS = ("nama_agent", "nama", "name", "agent_name", "nama_lengkap", "full_name", "fullname")
+
+
+def _folder(value) -> str | None:
+    """A readable folder name from free text such as an agent's name."""
+    if value is None:
+        return None
+    s = re.sub(r"[^\w.\- ]", "_", str(value).strip())
+    s = re.sub(r"\s+", " ", s).strip(" .")
+    return s or None
+
+
+def _agent_folders(agents: list[dict], id_col: str, name_col: str) -> dict[str, str]:
+    """agent id -> folder name. Same name (case-insensitive) twice, or no name: the id keeps them apart."""
+    base: dict[str, str] = {}
+    for a in agents:
+        if a.get(id_col) is None:
+            continue
+        key = str(a[id_col]).strip()
+        base[key] = _folder(a.get(name_col)) or f"agent_{_name(key)}"
+    counts = Counter(v.lower() for v in base.values())
+    return {k: v if counts[v.lower()] == 1 else f"{v}_{_name(k)}" for k, v in base.items()}
 
 
 def _rows(conn, table: str) -> list[dict]:
@@ -86,7 +111,7 @@ def _write_json(path: Path, data: dict) -> None:
 
 
 def organize(dest: Engine, out_dir: Path, cfg: OrganizeConfig, hardlink: bool = False) -> OrganizeSummary:
-    """Build houses/<id_rumah>/{house.json,photos/} and agents/<id_agent>/agent.json.
+    """Build houses/<id_rumah>/{house.json,photos/} and agents/<agent name>/agent.json.
 
     Reads the local SQLite copy after `link`; downloaded images are copied (or hard-linked)
     out of images/, so the download cache stays intact and the step can be re-run.
@@ -110,7 +135,16 @@ def organize(dest: Engine, out_dir: Path, cfg: OrganizeConfig, hardlink: bool = 
         agent_id_col = pk[0]
     _require(insp, cfg.house_table, [cfg.house_id, cfg.house_main_photo, cfg.house_agent])
     _require(insp, cfg.photo_table, [cfg.photo_id, cfg.photo_house])
-    _require(insp, cfg.agent_table, [agent_id_col])
+    _require(insp, cfg.agent_table, [agent_id_col, cfg.agent_name])
+    agent_cols = [c["name"] for c in insp.get_columns(cfg.agent_table)]
+    name_col = cfg.agent_name or next(
+        (c for want in _NAME_COLUMNS for c in agent_cols if c.lower() == want), None
+    )
+    if not name_col:
+        raise OrganizeError(
+            f"Can't tell which column of '{cfg.agent_table}' holds the agent's name. "
+            f"Available columns: {agent_cols}. Set organize.agent_name in config.yaml."
+        )
 
     with dest.connect() as c:
         houses = _rows(c, cfg.house_table)
@@ -136,6 +170,7 @@ def organize(dest: Engine, out_dir: Path, cfg: OrganizeConfig, hardlink: bool = 
             summary.orphan_photos += 1
 
     agent_by_id = {str(a[agent_id_col]).strip(): a for a in agents if a.get(agent_id_col) is not None}
+    folders = _agent_folders(agents, agent_id_col, name_col)
     houses_of_agent: dict[str, list[str]] = {}
     houses_root = out_dir / cfg.houses_dir
     agents_root = out_dir / cfg.agents_dir
@@ -192,9 +227,12 @@ def organize(dest: Engine, out_dir: Path, cfg: OrganizeConfig, hardlink: bool = 
         if not aid_key:
             summary.houses_without_agent += 1
         elif aid_key in agent_by_id:
-            aid = _name(aid_key)
-            houses_of_agent.setdefault(aid, []).append(hid)
-            agent_ref = {"id": aid_key, "file": f"../../{cfg.agents_dir}/{aid}/agent.json"}
+            houses_of_agent.setdefault(aid_key, []).append(hid)
+            agent_ref = {
+                "id": aid_key,
+                "name": agent_by_id[aid_key].get(name_col),
+                "file": f"../../{cfg.agents_dir}/{folders[aid_key]}/agent.json",
+            }
         else:
             summary.unknown_agent += 1
             agent_ref = {"id": aid_key, "file": None}
@@ -209,10 +247,10 @@ def organize(dest: Engine, out_dir: Path, cfg: OrganizeConfig, hardlink: bool = 
         summary.houses += 1
 
     for a in agents:
-        aid = _name(a.get(agent_id_col))
-        if aid is None:
+        if a.get(agent_id_col) is None:
             continue
-        adir = agents_root / aid
+        key = str(a[agent_id_col]).strip()
+        adir = agents_root / folders[key]
         files = []
         for col, value in a.items():  # images linked to the agent (e.g. a portrait column)
             if col.endswith("_local") and value:
@@ -223,7 +261,7 @@ def organize(dest: Engine, out_dir: Path, cfg: OrganizeConfig, hardlink: bool = 
             agent_id_col: a.get(agent_id_col),
             "agent": _clean(a),
             "files": files,
-            "houses": houses_of_agent.get(aid, []),
+            "houses": houses_of_agent.get(key, []),
         })
         summary.agents += 1
     return summary

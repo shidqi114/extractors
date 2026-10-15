@@ -53,5 +53,6 @@ organize:
   photo_house: id_rumah            # column of rumah_foto that points at the house
   agent_table: agent
   # agent_id: id_agent             # default: the agent table's primary key
+  # agent_name: nama_agent         # column naming the agents/<name>/ folders; default: auto-detect
   houses_dir: houses
   agents_dir: agents

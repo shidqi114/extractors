@@ -79,7 +79,7 @@ def test_houses_photos_and_main_photo(prepared):
     assert [(p["id_foto"], p["images"][0]["file"]) for p in data["photos"]] == [
         (10, "photos/10_p1.jpg"), (11, "photos/11_p2.jpg")]
     assert data["photos"][0]["row"]["id_rumah"] == 1
-    assert data["agent"] == {"id": "4", "file": "../../agents/4/agent.json"}
+    assert data["agent"] == {"id": "4", "name": "Widodo", "file": "../../agents/Widodo/agent.json"}
 
     # house 2: main photo 404 is recorded, its other photo is still placed
     d2 = _json(out / "houses" / "2" / "house.json")
@@ -97,10 +97,11 @@ def test_agents_folder_links_back_to_houses(prepared):
     dest, out = prepared
     organize(dest, out, OrganizeConfig())
 
-    a4 = _json(out / "agents" / "4" / "agent.json")
-    assert a4["agent"]["nama"] == "Widodo" and a4["houses"] == ["1", "2"]
-    assert a4["files"] == ["ag4.jpg"] and (out / "agents" / "4" / "ag4.jpg").is_file()
-    a5 = _json(out / "agents" / "5" / "agent.json")
+    assert sorted(p.name for p in (out / "agents").iterdir()) == ["Sari", "Widodo"]  # named, not numbered
+    a4 = _json(out / "agents" / "Widodo" / "agent.json")
+    assert a4["id_agent"] == 4 and a4["agent"]["nama"] == "Widodo" and a4["houses"] == ["1", "2"]
+    assert a4["files"] == ["ag4.jpg"] and (out / "agents" / "Widodo" / "ag4.jpg").is_file()
+    a5 = _json(out / "agents" / "Sari" / "agent.json")
     assert a5["houses"] == [] and a5["files"] == []
 
     assert _json(out / "houses" / "3" / "house.json")["agent"] == {"id": "99", "file": None}
@@ -127,4 +128,42 @@ def test_clear_errors(prepared):
     with dest.begin() as c:
         c.exec_driver_sql("DROP TABLE _image_links")
     with pytest.raises(OrganizeError, match="extractor link"):
+        organize(dest, out, OrganizeConfig())
+
+
+def _rename_agents(dest, names):
+    with dest.begin() as c:
+        for agent_id, name in names.items():
+            c.exec_driver_sql("UPDATE agent SET nama = ? WHERE id_agent = ?", (name, agent_id))
+
+
+def test_agent_folder_names_are_safe_and_unique(prepared):
+    dest, out = prepared
+    _rename_agents(dest, {4: "Pak/Budi: Santoso", 5: "pak/budi: santoso"})  # same name once cleaned
+
+    organize(dest, out, OrganizeConfig())
+
+    names = sorted(p.name for p in (out / "agents").iterdir())
+    assert names == ["Pak_Budi_ Santoso_4", "pak_budi_ santoso_5"]  # id keeps duplicates apart; no path separators
+    assert not (out.parent / "Budi").exists()
+
+
+def test_agent_without_name_falls_back_to_id(prepared):
+    dest, out = prepared
+    _rename_agents(dest, {5: ""})
+
+    organize(dest, out, OrganizeConfig())
+
+    assert (out / "agents" / "agent_5" / "agent.json").is_file()
+
+
+def test_agent_name_column_is_configurable_and_checked(prepared):
+    dest, out = prepared
+    organize(dest, out, OrganizeConfig(agent_name="foto"))  # any column can name the folders
+    assert (out / "agents" / "ag4.jpg").is_dir()
+    with pytest.raises(OrganizeError, match="no column"):
+        organize(dest, out, OrganizeConfig(agent_name="nope"))
+    with dest.begin() as c:
+        c.exec_driver_sql("ALTER TABLE agent RENAME COLUMN nama TO julukan")
+    with pytest.raises(OrganizeError, match="organize.agent_name"):
         organize(dest, out, OrganizeConfig())

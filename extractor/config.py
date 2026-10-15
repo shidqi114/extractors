@@ -70,6 +70,7 @@ class OrganizeConfig(BaseModel):
     photo_house: str = "id_rumah"  # column of the photo table pointing at the house
     agent_table: str = "agent"
     agent_id: str | None = None  # default: the agent table's primary key
+    agent_name: str | None = None  # column used for the agents/<name>/ folder; default: auto-detect
     houses_dir: str = "houses"
     agents_dir: str = "agents"
 

@@ -9,11 +9,12 @@ from rich.console import Console
 from rich.progress import Progress
 from rich.table import Table
 
-from .config import Config, load_config
+from .config import Config, ImageSource, load_config
 from .dump import dump_tables, make_source_engine, open_dest, sqlite_source_engine
 from .export import export_all
 from .images.detect import Detector, scan_refs, select_columns
-from .images.download import download_all
+from .images.resolve import plan_job
+from .images.download import check_job, download_all
 from .link import link as link_images
 from .organize import OrganizeError
 from .organize import organize as organize_output
@@ -114,9 +115,25 @@ def _download(cfg: Config, ssh, retry_failed: bool) -> None:
         summary = asyncio.run(
             download_all(dest, cfg.images, cfg.output_dir, sftp, retry_failed, lambda n: progress.advance(task, n))
         )
-    console.print(f"Attempted {summary.attempted}. Manifest status: {summary.counts}")
+    ok = summary.counts.get("ok", 0)
+    failed = sum(n for status, n in summary.counts.items() if status != "ok")
+    console.print(f"Attempted {summary.attempted}. Images on disk: {ok}. Failed: {failed}. Status: {summary.counts}")
     if summary.counts.get("unresolved"):
         console.print("[yellow]Some references match no images.sources entry; see the _images table.[/]")
+    if failed:
+        console.print("[bold]Examples of failures:[/]")
+        for status, where, why in summary.samples:
+            console.print(f"  {status}: {where} {why}".rstrip())
+    if summary.attempted == 0 and failed:
+        console.print(
+            f"[yellow]{failed} image(s) failed earlier and were not retried because the sources are unchanged. "
+            "Use --retry-failed to try them again.[/]"
+        )
+    if ok == 0 and failed:
+        console.print(
+            "[red]No image was downloaded.[/] The base_url / sftp_dir in config.yaml are probably wrong. "
+            "Test one image with:  extractor images check --base-url https://YOUR-SITE/PATH/"
+        )
 
 
 def _link_and_export(cfg: Config) -> None:
@@ -180,6 +197,44 @@ def dump(
 def images_scan(config: Path = ConfigOpt, dry_run: bool = typer.Option(False, help="Only report; don't write refs.")):
     """Detect image columns in the local copy and list every reference."""
     _scan(load_config(config), write=not dry_run)
+
+
+@images_app.command("check")
+def images_check(
+    config: Path = ConfigOpt,
+    ref: str = typer.Option(None, help="An image value from the DB, e.g. 20220324111256_83rxz.jpg (default: the first one found)."),
+    column: str = typer.Option(None, help="table.column the value belongs to (default: where it was found)."),
+    base_url: str = typer.Option(None, help="Try this URL prefix instead of the configured sources."),
+    sftp_dir: str = typer.Option(None, help="Try this folder on the VPS instead of the configured sources."),
+):
+    """Test where one image can be fetched from: shows the result for every place tried."""
+    cfg = load_config(config)
+    images_cfg = cfg.images.model_copy(deep=True)
+    if base_url or sftp_dir:
+        images_cfg.sources = [ImageSource(name="check", columns=["*"], base_url=base_url, sftp_dir=sftp_dir)]
+    table_name, column_name = (column.split(".", 1) + [""])[:2] if column else (None, None)
+    if ref is None:
+        with open_dest(cfg.output_dir).connect() as c:
+            row = c.exec_driver_sql("SELECT table_name, column_name, raw_ref FROM _image_refs LIMIT 1").fetchone()
+        if row is None:
+            raise typer.BadParameter("No image references yet. Run `extractor images scan` first, or pass --ref.")
+        table_name, column_name, ref = table_name or row[0], column_name or row[1], row[2]
+    job = plan_job(ref, table_name or "", column_name or "", images_cfg)
+    if job is None or not job.candidates:
+        console.print(f"[red]No place to look for '{ref}'.[/] It matches no source: check images.sources[].columns, "
+                      "or pass --base-url / --sftp-dir.")
+        raise typer.Exit(1)
+    needs_ssh = cfg.ssh is not None and any(c.kind == "sftp" for c in job.candidates)
+    with _ssh(cfg) if needs_ssh else _null() as ssh:
+        results = asyncio.run(check_job(job, images_cfg, ssh.sftp() if ssh else None, cfg.output_dir / "_check"))
+    console.print(f"Checking [bold]{ref}[/]")
+    for cand, o in results:
+        mark = "[green]FOUND[/]" if o.kind == "ok" else "[red]" + o.kind.upper() + "[/]"
+        detail = f"HTTP {o.http_status}" if o.http_status else ""
+        detail += f" {o.content_type or ''} {o.size or ''}B" if o.kind == "ok" else f" {o.error or ''}"
+        console.print(f"  {mark} {cand.kind}: {cand.target} {detail}".rstrip())
+    if not any(o.kind == "ok" for _, o in results):
+        raise typer.Exit(1)
 
 
 @images_app.command("download")

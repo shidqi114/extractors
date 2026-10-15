@@ -6,7 +6,7 @@ import hashlib
 import os
 import threading
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
@@ -40,6 +40,7 @@ class Outcome:
 class Summary:
     attempted: int
     counts: dict[str, int]  # final status of every job in the manifest
+    samples: list[tuple[str, str, str]] = field(default_factory=list)  # (status, where, why) of a few failures
 
 
 class _Retry(Exception):
@@ -139,8 +140,37 @@ async def _run_job(job: Job, target: Path, client, sftp, lock, cfg: ImagesConfig
 
 _CREATE_IMAGES = (
     "CREATE TABLE IF NOT EXISTS _images (job_key TEXT PRIMARY KEY, local_path TEXT, url TEXT, status TEXT, "
-    "http_status INTEGER, via TEXT, size INTEGER, sha256 TEXT, content_type TEXT, error TEXT, fetched_at TEXT)"
+    "http_status INTEGER, via TEXT, size INTEGER, sha256 TEXT, content_type TEXT, error TEXT, fetched_at TEXT, "
+    "tried_sig TEXT)"
 )
+
+
+def _sig(job: Job) -> str:
+    """Fingerprint of where we look for a file. A failure is only final for the same places."""
+    return hashlib.sha1("|".join(f"{c.kind}:{c.target}" for c in job.candidates).encode()).hexdigest()[:16]
+
+
+async def check_job(job: Job, cfg: ImagesConfig, sftp: SFTPLike | None, tmp_dir: Path) -> list[tuple[Candidate, Outcome]]:
+    """Try each place a file might be, once, without retries or keeping the file. For troubleshooting."""
+    results: list[tuple[Candidate, Outcome]] = []
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    target = tmp_dir / "check.bin"
+    async with httpx.AsyncClient(timeout=cfg.timeout, follow_redirects=True, headers={"User-Agent": cfg.user_agent}) as client:
+        for cand in job.candidates:
+            if cand.kind == "http":
+                try:
+                    outcome = await _http_once(client, cand.target, target)
+                except _Retry as e:
+                    outcome = Outcome("error", via="http", url=cand.target, error=str(e))
+                except httpx.HTTPError as e:
+                    outcome = Outcome("error", via="http", url=cand.target, error=f"{type(e).__name__}: {e}")
+            elif sftp is not None:
+                outcome = await asyncio.to_thread(_sftp_fetch, sftp, threading.Lock(), cand.target, target)
+            else:
+                outcome = Outcome("error", via="sftp", url=cand.target, error="SFTP not available (no ssh config)")
+            target.unlink(missing_ok=True)
+            results.append((cand, outcome))
+    return results
 
 
 async def download_all(
@@ -159,7 +189,9 @@ async def download_all(
     with dest.begin() as c:
         c.exec_driver_sql(_CREATE_IMAGES)
         refs = c.exec_driver_sql("SELECT id, table_name, column_name, raw_ref FROM _image_refs").fetchall()
-        existing = {k: s for k, s in c.exec_driver_sql("SELECT job_key, status FROM _images")}
+        if "tried_sig" not in {r[1] for r in c.exec_driver_sql("PRAGMA table_info(_images)")}:
+            c.exec_driver_sql("ALTER TABLE _images ADD COLUMN tried_sig TEXT")  # manifest from an older version
+        existing = {k: (st, sg) for k, st, sg in c.exec_driver_sql("SELECT job_key, status, tried_sig FROM _images")}
 
     jobs: dict[str, Job] = {}
     ref_keys: list[tuple[str | None, int]] = []
@@ -177,12 +209,13 @@ async def download_all(
     img_dir = out_dir / "images"
 
     def needs_run(job: Job) -> bool:
-        status = existing.get(job.key)
-        if status is None:
+        if job.key not in existing:
             return True
+        status, tried = existing[job.key]
         if status == "ok":
             return not (img_dir / job.local_rel).exists()
-        return retry_failed
+        # Failed before: retry on request, or automatically if the places to look have changed since.
+        return retry_failed or tried != _sig(job)
 
     pending = [j for j in jobs.values() if needs_run(j)]
     sem = asyncio.Semaphore(cfg.concurrency)
@@ -197,7 +230,7 @@ async def download_all(
                 outcome = await _run_job(job, img_dir / job.local_rel, client, sftp, lock, cfg)
             with dest.begin() as c:
                 c.exec_driver_sql(
-                    "INSERT OR REPLACE INTO _images VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT OR REPLACE INTO _images VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         job.key,
                         f"images/{job.local_rel}",
@@ -210,6 +243,7 @@ async def download_all(
                         outcome.content_type,
                         outcome.error,
                         datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        _sig(job),
                     ),
                 )
             if on_progress:
@@ -219,4 +253,10 @@ async def download_all(
 
     with dest.connect() as c:
         counts = Counter(s for (s,) in c.exec_driver_sql("SELECT status FROM _images"))
-    return Summary(len(pending), dict(counts))
+        samples = [
+            (st, url or "", err or (f"HTTP {code}" if code else ""))
+            for st, url, err, code in c.exec_driver_sql(
+                "SELECT status, url, error, http_status FROM _images WHERE status != 'ok' LIMIT 5"
+            )
+        ]
+    return Summary(len(pending), dict(counts), samples)

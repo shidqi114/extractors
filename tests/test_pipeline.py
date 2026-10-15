@@ -2,6 +2,7 @@
 import asyncio
 import csv
 import json
+import re
 import shutil
 
 import pytest
@@ -10,7 +11,7 @@ from sqlalchemy import inspect
 from extractor.config import ImagesConfig, ImageSource
 from extractor.export import export_all
 from extractor.images.detect import Detector, scan_refs, select_columns
-from extractor.images.download import download_all
+from extractor.images.download import check_job, download_all
 from extractor.images.resolve import plan_job
 from extractor.link import link
 
@@ -142,3 +143,52 @@ def test_resolve_rules():
     absolute = plan_job("https://cdn.x.com/p/a.jpg?w=1", "rumah", "foto", cfg)
     assert absolute.candidates[0].target == "https://cdn.x.com/p/a.jpg?w=1"
     assert absolute.local_rel.startswith("cdn.x.com/p/a_")
+
+
+def test_failures_are_retried_automatically_after_the_config_changes(dumped, server):
+    """The trap: fix base_url after a failed first run, re-run, and nothing was downloaded."""
+    dest, out = dumped
+    server.expect_request(re.compile("^/wrong/")).respond_with_data("", status=404)
+    bad = ImagesConfig(
+        sources=[ImageSource(name="foto", columns=["rumah.foto", "rumah_foto.*"], base_url=server.url_for("/wrong/"))],
+        max_retries=1, retry_wait=0,
+    )
+    _scan(dest, bad)
+    first = asyncio.run(download_all(dest, bad, out))
+    assert first.counts == {"not_found": 7} and len(first.samples) == 5 and first.samples[0][0] == "not_found"
+
+    assert asyncio.run(download_all(dest, bad, out)).attempted == 0  # same places: not hammered again
+
+    second = asyncio.run(download_all(dest, _cfg(server), out))  # corrected config, no --retry-failed
+    assert second.attempted == 7 and second.counts["ok"] == 4
+    assert (out / "images/foto/g/1.jpg").read_bytes() == JPEG
+
+
+def test_manifest_from_an_older_version_is_upgraded_and_retried(dumped, server):
+    dest, out = dumped
+    cfg = _cfg(server)
+    _scan(dest, cfg)
+    with dest.begin() as c:  # manifest as written before tried_sig existed, with a stale failure
+        c.exec_driver_sql(
+            "CREATE TABLE _images (job_key TEXT PRIMARY KEY, local_path TEXT, url TEXT, status TEXT, http_status INTEGER, "
+            "via TEXT, size INTEGER, sha256 TEXT, content_type TEXT, error TEXT, fetched_at TEXT)"
+        )
+        c.exec_driver_sql("INSERT INTO _images (job_key, status) VALUES ('rel:foto:a1.jpg', 'not_found')")
+
+    asyncio.run(download_all(dest, cfg, out))
+
+    assert (out / "images/foto/a1.jpg").is_file()
+
+
+def test_check_job_reports_every_candidate_and_leaves_nothing_behind(server, tmp_path):
+    cfg = _cfg(server)
+    missing = asyncio.run(check_job(plan_job("missing.jpg", "rumah", "foto", cfg), cfg, None, tmp_path))
+    assert [(c.kind, o.kind, o.http_status) for c, o in missing] == [("http", "not_found", 404)]
+
+    found = asyncio.run(check_job(plan_job("a1.jpg", "rumah", "foto", cfg), cfg, None, tmp_path))
+    assert [(o.kind, o.size) for _, o in found] == [("ok", len(JPEG))]
+
+    cfg_sftp = _cfg(server, sftp_dir="/nowhere")
+    no_ssh = asyncio.run(check_job(plan_job("a1.jpg", "rumah", "foto", cfg_sftp), cfg_sftp, None, tmp_path))
+    assert [o.kind for _, o in no_ssh] == ["ok", "error"] and "no ssh" in no_ssh[1][1].error.lower()
+    assert list(tmp_path.iterdir()) == []
